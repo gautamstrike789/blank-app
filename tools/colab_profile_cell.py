@@ -95,6 +95,7 @@ profile = {"file": FILENAME, "size_mb": round(os.path.getsize(path)/1e6, 2),
            "format": fmt, "generated": datetime.now().isoformat(timespec="seconds"),
            "sheets": {}}
 biggest, biggest_n = None, -1
+frames = {}   # keep the CLEANED frames; sampling from the raw ones misaligns columns
 
 for name, raw in book.items():
     if raw.empty: continue
@@ -163,6 +164,7 @@ for name, raw in book.items():
                                     "columns": int(len(df.columns)),
                                     "column_order": [str(c) for c in df.columns],
                                     "relationships": rel, "fields": fields}
+    frames[str(name)] = df
     print(f"  {name!r}: {len(df):,} rows x {len(df.columns)} cols")
     if len(df) > biggest_n: biggest, biggest_n = str(name), len(df)
 
@@ -170,20 +172,34 @@ out_json = os.path.join(BASE, "Raw_Data_profile.json")
 with open(out_json, "w") as fh:
     json.dump(profile, fh, indent=2, default=str)
 
-# pseudonymised sample of the largest sheet
-src = book[biggest]
-h = profile["sheets"][biggest]["header_row"] - 1
-sample = src.iloc[h+1:h+1+SAMPLE_ROWS].copy()
-sample.columns = profile["sheets"][biggest]["column_order"]
-for c in sample.columns:
-    lc = str(c).strip().lower()
-    if lc in ("baname","ba name","ba"): sample[c] = sample[c].map(lambda v: pseudo(v,"BA"))
-    elif "owner" in lc: sample[c] = sample[c].map(lambda v: pseudo(v,"OWNER"))
-    elif personal(c): sample[c] = sample[c].map(lambda v: pseudo(v,"X"))
-out_csv = os.path.join(BASE, "Raw_Data_sample.csv")
-sample.to_csv(out_csv, index=False)
+# Pseudonymised sample of the largest sheet, taken from the CLEANED frame.
+# Sampling the raw frame and then assigning the cleaned column names fails on
+# any export containing an all-empty column, because dropna(axis=1) removed it
+# from the names but not from the raw data.
+out_csv = None
+try:
+    if biggest is None:
+        raise ValueError("no readable sheet was found")
+    sample = frames[biggest].head(SAMPLE_ROWS).copy()
+    for c in sample.columns:
+        lc = str(c).strip().lower()
+        if lc in ("baname", "ba name", "ba"):
+            sample[c] = sample[c].map(lambda v: pseudo(v, "BA"))
+        elif "owner" in lc:
+            sample[c] = sample[c].map(lambda v: pseudo(v, "OWNER"))
+        elif personal(c):
+            sample[c] = sample[c].map(lambda v: pseudo(v, "X"))
+    out_csv = os.path.join(BASE, "Raw_Data_sample.csv")
+    sample.to_csv(out_csv, index=False)
+except Exception:
+    # The profile is the artefact that matters; never lose it to a sample error.
+    import traceback
+    print("\nsample step failed, but the profile below is still valid:")
+    traceback.print_exc()
 
-print(f"\nDONE")
+print("\nDONE")
 print(f"  {out_json}  ({os.path.getsize(out_json)/1e3:.0f} KB)")
-print(f"  {out_csv}   ({os.path.getsize(out_csv)/1e3:.0f} KB)")
-print("\nBoth saved into your TMO_Weekly_Data folder. Tell me and I'll read them.")
+if out_csv:
+    print(f"  {out_csv}   ({os.path.getsize(out_csv)/1e3:.0f} KB)")
+print("\nSaved into your TMO_Weekly_Data folder.")
+print("Upload them in the chat (they are small), or tell me and I will fetch them.")
