@@ -28,6 +28,55 @@ from qmis.core.periods import MONTHLY, WEEKLY, Period, PeriodError, parse_month_
 
 COLUMN_MAP_FILE = Path(__file__).resolve().parent.parent / "config" / "column_map.yaml"
 
+def detect_workbook_format(path: str | Path) -> str:
+    """Identify a workbook by its CONTENT rather than its extension.
+
+    .xlsx and .xlsb are both ZIP containers; only the workbook part inside
+    differs (XML vs binary). Trusting the extension means a file renamed to get
+    past an upload filter, or exported with the wrong suffix, fails with an
+    unhelpful parser error instead of simply being read.
+    """
+    import zipfile
+
+    path = Path(path)
+    try:
+        with open(path, "rb") as handle:
+            magic = handle.read(8)
+    except OSError:
+        return path.suffix.lower().lstrip(".")
+    if magic[:2] != b"PK":
+        if magic == b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1":
+            return "xls"
+        return "text"
+    try:
+        with zipfile.ZipFile(path) as archive:
+            names = archive.namelist()
+    except zipfile.BadZipFile:
+        return "unknown"
+    if any(n.endswith("workbook.bin") for n in names):
+        return "xlsb"
+    if any(n.endswith("workbook.xml") for n in names):
+        return "xlsx"
+    return "zip"
+
+
+def excel_engine(path: str | Path) -> str:
+    """The pandas engine that can actually read this file."""
+    detected = detect_workbook_format(path)
+    if detected == "xlsb":
+        try:
+            import pyxlsb  # noqa: F401
+        except ImportError as exc:
+            raise ReaderError(
+                f"{Path(path).name} is an Excel binary workbook (.xlsb). "
+                "Install the reader with: pip install pyxlsb"
+            ) from exc
+        return "pyxlsb"
+    if detected == "xls":
+        return "xlrd"
+    return "openpyxl"
+
+
 _FILENAME_WEEK = re.compile(r"(?:^|[^0-9a-z])(?:wk|week|w)[ _-]?(\d{1,2})(?:[^0-9]|$)", re.I)
 _FILENAME_ISO = re.compile(r"(20\d{2})[ _-]?W(\d{1,2})", re.I)
 _FILENAME_DMY = re.compile(r"(?:^|[^0-9])(\d{2})(\d{2})(\d{2})(?:[^0-9]|$)")
@@ -231,7 +280,7 @@ def detect_layouts(
     entity_idx, period_idx = column_map.entity_index, column_map.period_index
     layouts: list[SheetLayout] = []
 
-    book = pd.read_excel(path, sheet_name=None, header=None, engine="openpyxl")
+    book = pd.read_excel(path, sheet_name=None, header=None, engine=excel_engine(path))
     for sheet_name, raw in book.items():
         if raw.empty:
             continue
@@ -304,7 +353,10 @@ def read_sheet(
     markers = column_map.total_markers
 
     raw = pd.read_excel(
-        path, sheet_name=layout.sheet_name, header=layout.header_row - 1, engine="openpyxl"
+        path,
+        sheet_name=layout.sheet_name,
+        header=layout.header_row - 1,
+        engine=excel_engine(path),
     )
     raw.columns = [_clean_header(c) for c in raw.columns]
     # Duplicate labels (Excel pivots repeat "SigninDT (Year)" side by side) are

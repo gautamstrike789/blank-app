@@ -207,6 +207,30 @@ def test_filename_date_is_used_when_the_sheet_has_no_period(tmp_path):
     assert infer_period_from_filename("no-date-here.xlsx") is None
 
 
+def test_a_workbook_is_identified_by_content_not_extension(write_workbook, tmp_path):
+    """A file renamed to get past an upload filter must still be readable."""
+    import shutil
+
+    from qmis.ingest.readers import detect_workbook_format, excel_engine
+
+    real = write_workbook([make_row("2026-W33", "Owner A", "BA 1")], name="real.xlsx")
+    renamed = tmp_path / "mislabelled.xlsb"
+    shutil.copy(real, renamed)
+
+    assert detect_workbook_format(renamed) == "xlsx"
+    assert excel_engine(renamed) == "openpyxl"
+
+
+def test_a_mislabelled_workbook_still_ingests(session, write_workbook, tmp_path):
+    import shutil
+
+    real = write_workbook([make_row("2026-W33", "Owner A", "BA 1")], name="real.xlsx")
+    renamed = tmp_path / "actually_xlsx.xlsb"
+    shutil.copy(real, renamed)
+    result = ingest_file(session, renamed)
+    assert result.accepted, result.message
+
+
 @pytest.mark.parametrize(
     "raw,expected",
     [("88.6%", 0.886), ("1,234", 1234.0), ("(9.1)", -9.1), ("#DIV/0!", None), ("", None), (None, None)],

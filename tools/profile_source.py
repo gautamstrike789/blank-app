@@ -216,9 +216,45 @@ def looks_like_date_column(name: str) -> bool:
     return any(token in lowered for token in ("date", "dt", "time", "day", "month", "year"))
 
 
+def detect_format(path: Path) -> str:
+    """Identify a spreadsheet by its CONTENT, not its file extension.
+
+    Both .xlsx and .xlsb are ZIP containers; what separates them is whether the
+    workbook part inside is XML or binary. Sniffing that means a file renamed
+    to get past an upload filter still reads correctly, and a genuinely
+    mislabelled export fails loudly instead of silently.
+    """
+    import zipfile
+
+    try:
+        with open(path, "rb") as handle:
+            magic = handle.read(8)
+    except OSError:
+        return path.suffix.lower().lstrip(".")
+
+    if magic[:2] == b"PK":
+        try:
+            with zipfile.ZipFile(path) as archive:
+                names = set(archive.namelist())
+        except zipfile.BadZipFile:
+            return "unknown"
+        if any(n.endswith("workbook.bin") for n in names):
+            return "xlsb"
+        if any(n.endswith("workbook.xml") for n in names):
+            return "xlsx"
+        return "zip"
+    if magic[:8] == b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1":
+        return "xls"  # old OLE2 format
+    return "text"
+
+
 def engine_for(path: Path) -> str | None:
     """.xlsb is a binary format openpyxl cannot read; pyxlsb handles it."""
-    suffix = path.suffix.lower()
+    detected = detect_format(path)
+    suffix = "." + detected if detected in ("xlsb", "xlsx", "xls") else path.suffix.lower()
+    if detected in ("xlsb", "xlsx") and suffix != path.suffix.lower():
+        print(f"      note: file is named {path.suffix} but is actually {detected.upper()}; "
+              f"reading it as {detected.upper()}")
     if suffix == ".xlsb":
         try:
             import pyxlsb  # noqa: F401
@@ -234,7 +270,8 @@ def engine_for(path: Path) -> str | None:
 
 
 def load_sheets(path: Path, max_rows: int | None) -> dict[str, pd.DataFrame]:
-    if path.suffix.lower() in (".csv", ".tsv", ".txt"):
+    detected = detect_format(path)
+    if detected == "text" or path.suffix.lower() in (".csv", ".tsv", ".txt"):
         separator = "\t" if path.suffix.lower() == ".tsv" else ","
         frame = pd.read_csv(path, sep=separator, nrows=max_rows, low_memory=False)
         return {"(csv)": frame}
