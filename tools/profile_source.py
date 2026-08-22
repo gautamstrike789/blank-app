@@ -18,12 +18,15 @@ I need - without a 500 MB upload and without moving donor personal data.
 
 Usage
 -----
-    python profile_source.py RAWFILE.xlsx
+    python profile_source.py Raw_Data.xlsb
     python profile_source.py RAWFILE.csv --sample-rows 3000
     python profile_source.py RAWFILE.xlsx --no-sample        # profile only
     python profile_source.py RAWFILE.xlsx --keep-names       # do not pseudonymise
+    python profile_source.py Raw_Data.xlsb --max-rows 200000 # cap memory use
 
-Only needs pandas and openpyxl.
+Needs pandas, plus openpyxl for .xlsx and pyxlsb for .xlsb:
+
+    pip install pandas openpyxl pyxlsb
 """
 
 from __future__ import annotations
@@ -200,13 +203,44 @@ def build_sample(frame: pd.DataFrame, rows: int, keep_names: bool) -> pd.DataFra
     return sample
 
 
+# Excel stores a date as "days since 1899-12-30". Roughly 2015-2035 in serials:
+SERIAL_MIN, SERIAL_MAX = 40000, 50000
+
+
+def excel_serial_to_datetime(series: pd.Series) -> pd.Series:
+    return pd.to_datetime(series, unit="D", origin="1899-12-30", errors="coerce")
+
+
+def looks_like_date_column(name: str) -> bool:
+    lowered = str(name).strip().lower()
+    return any(token in lowered for token in ("date", "dt", "time", "day", "month", "year"))
+
+
+def engine_for(path: Path) -> str | None:
+    """.xlsb is a binary format openpyxl cannot read; pyxlsb handles it."""
+    suffix = path.suffix.lower()
+    if suffix == ".xlsb":
+        try:
+            import pyxlsb  # noqa: F401
+        except ImportError:
+            raise SystemExit(
+                "This is an .xlsb (Excel binary) file, which needs an extra reader.\n"
+                "Install it with:  pip install pyxlsb"
+            )
+        return "pyxlsb"
+    if suffix in (".xlsx", ".xlsm", ".xltx"):
+        return "openpyxl"
+    return None
+
+
 def load_sheets(path: Path, max_rows: int | None) -> dict[str, pd.DataFrame]:
     if path.suffix.lower() in (".csv", ".tsv", ".txt"):
         separator = "\t" if path.suffix.lower() == ".tsv" else ","
         frame = pd.read_csv(path, sep=separator, nrows=max_rows, low_memory=False)
         return {"(csv)": frame}
 
-    book = pd.read_excel(path, sheet_name=None, header=None, nrows=max_rows, engine="openpyxl")
+    engine = engine_for(path)
+    book = pd.read_excel(path, sheet_name=None, header=None, nrows=max_rows, engine=engine)
     out: dict[str, pd.DataFrame] = {}
     for name, raw in book.items():
         if raw.empty:
@@ -219,6 +253,20 @@ def load_sheets(path: Path, max_rows: int | None) -> dict[str, pd.DataFrame]:
         ]
         frame = frame.dropna(how="all").dropna(axis=1, how="all")
         frame = frame.infer_objects()
+
+        # pyxlsb returns dates as raw Excel serial numbers rather than
+        # datetimes, so a sign-in date arrives looking like 46023.0. Left
+        # alone it would be profiled as a meaningless numeric column and the
+        # reporting period would be invisible.
+        if engine == "pyxlsb":
+            for column in frame.columns:
+                if not looks_like_date_column(column):
+                    continue
+                numeric = pd.to_numeric(frame[column], errors="coerce")
+                plausible = numeric.between(SERIAL_MIN, SERIAL_MAX)
+                if numeric.notna().any() and plausible.mean() > 0.9:
+                    frame[column] = excel_serial_to_datetime(numeric)
+
         for column in frame.columns:
             if frame[column].dtype == object:
                 converted = pd.to_numeric(frame[column], errors="coerce")
@@ -250,7 +298,11 @@ def main() -> int:
         print(f"not found: {args.path}", file=sys.stderr)
         return 1
 
-    print(f"reading {args.path.name} ({args.path.stat().st_size / 1e6:.1f} MB)...")
+    size_mb = args.path.stat().st_size / 1e6
+    print(f"reading {args.path.name} ({size_mb:.1f} MB)...")
+    if size_mb > 25 and args.max_rows is None:
+        print("      large file - this may take a few minutes and a few GB of RAM.")
+        print("      If it struggles, re-run with e.g. --max-rows 200000")
     loaded = load_sheets(args.path, args.max_rows)
     header_rows = {k.replace("__header_row__", ""): v
                    for k, v in loaded.items() if str(k).startswith("__header_row__")}
