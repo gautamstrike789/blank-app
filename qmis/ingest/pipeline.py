@@ -340,6 +340,94 @@ def ingest_file(
     )
 
 
+def ingest_fact_export(
+    session: Session,
+    path: str | Path,
+    *,
+    registry: MetricRegistry | None = None,
+    uploaded_by: str | None = None,
+    allow_reprocess: bool = False,
+) -> IngestResult:
+    """Load a pre-aggregated fact export produced by ``facts_to_wide``.
+
+    Used when the donation-level file is too large or too sensitive to move: the
+    aggregation runs where the data already lives and only the resulting numbers
+    travel. The facts are identical either way, because it is the same
+    aggregation code on both sides.
+    """
+    from qmis.ingest.aggregation import AggregationResult, wide_to_facts
+
+    registry = registry or get_registry()
+    path = Path(path)
+    digest = sha256_file(path)
+    ctx = build_context(session, allow_reprocess=allow_reprocess)
+
+    upload = Upload(
+        filename=path.name,
+        source_uri=str(path),
+        content_hash=digest,
+        grain="weekly",
+        status=UPLOAD_REJECTED,
+        uploaded_by=uploaded_by,
+        profile="fact_export",
+    )
+    session.add(upload)
+    session.flush()
+
+    wide = pd.read_csv(path, compression="infer")
+    required = {"entity_path", "entity_name", "parent_path", "level", "period_key"}
+    missing = required - set(wide.columns)
+    if missing:
+        report = ValidationReport(
+            [Finding(ISSUE_ERROR, "not_a_fact_export",
+                     f"{path.name} is missing {', '.join(sorted(missing))}; it does not look "
+                     "like a QMIS fact export.")]
+        )
+        _persist_issues(session, upload, report)
+        session.flush()
+        return IngestResult(upload.id, path.name, False, report, message=report.errors[0].message)
+
+    facts = wide_to_facts(wide)
+    entities = wide[["entity_path", "entity_name", "parent_path", "level"]].drop_duplicates()
+    periods = sorted(str(p) for p in wide["period_key"].dropna().unique())
+    result = AggregationResult(
+        facts=facts, entities=entities, source_rows=len(wide), periods=periods
+    )
+
+    report = ValidationReport()
+    report.add(*check_duplicate_upload(digest, path.name, periods, ctx))
+    report.add(
+        Finding(ISSUE_INFO, "fact_export",
+                f"Pre-aggregated export: {len(wide):,} entity-weeks across {len(periods)} "
+                f"week(s) and {wide['level'].nunique()} level(s).")
+    )
+    _persist_issues(session, upload, report)
+    upload.period_min = periods[0] if periods else None
+    upload.period_max = periods[-1] if periods else None
+    upload.period_key = upload.period_max
+    upload.row_count = len(wide)
+
+    if not report.ok:
+        upload.notes = "; ".join(f.message for f in report.errors)[:4000]
+        session.flush()
+        return IngestResult(upload.id, path.name, False, report, periods=periods,
+                            message=f"Rejected: {report.errors[0].message}")
+
+    loaded, superseded, entity_count = _load_aggregated_facts(session, upload, result, registry)
+    upload.status = UPLOAD_LOADED
+    upload.fact_count = loaded
+    upload.entity_count = entity_count
+    _mark_superseded_uploads(session, upload, periods)
+    session.flush()
+    return IngestResult(
+        upload.id, path.name, True, report, periods=periods, grain="weekly",
+        entity_level="ba", facts_loaded=loaded, entities_seen=entity_count,
+        superseded_facts=superseded,
+        message=f"Loaded {loaded:,} values for {entity_count:,} entities across "
+                f"{len(periods)} week(s)",
+    )
+
+
 def _try_donation_level(
     path: Path, sheet_name: str | None = None
 ) -> tuple[AggregationResult, str] | None:

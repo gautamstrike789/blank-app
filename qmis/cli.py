@@ -3,6 +3,7 @@
     qmis init-db                     create the schema
     qmis generate-sample --weeks 12  write demo weekly workbooks
     qmis ingest FILE...              load one or more workbooks
+    qmis load-facts FILE.csv.gz      load a pre-aggregated fact export
     qmis watch                       process everything in the inbox
     qmis evaluate [--period KEY]     (re)run the alert engine
     qmis notify --period KEY         build and send digests
@@ -93,6 +94,22 @@ def cmd_ingest(args) -> int:
     if args.evaluate and failures < len(args.files):
         return cmd_evaluate(args)
     return 1 if failures else 0
+
+
+def cmd_load_facts(args) -> int:
+    from qmis.ingest.pipeline import ingest_fact_export
+
+    init_db()
+    with session_scope() as session:
+        for path in args.files:
+            result = ingest_fact_export(
+                session, path, uploaded_by=args.user, allow_reprocess=args.reprocess
+            )
+            print(result)
+            for finding in result.report.findings:
+                if finding.severity != "info" or args.verbose:
+                    print(f"    {finding}")
+    return 0
 
 
 def cmd_watch(args) -> int:
@@ -281,6 +298,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--period")
     p.add_argument("--all", action="store_true")
     p.set_defaults(func=cmd_ingest)
+
+    p = sub.add_parser(
+        "load-facts",
+        help="load a pre-aggregated fact export (qmis_facts.csv.gz)",
+    )
+    p.add_argument("files", nargs="+")
+    p.add_argument("--user", default="cli")
+    p.add_argument("--reprocess", action="store_true")
+    p.set_defaults(func=cmd_load_facts)
 
     p = sub.add_parser("watch", help="process everything in the inbox folder")
     p.add_argument("--notify", action="store_true", help="force notifications on")

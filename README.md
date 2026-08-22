@@ -83,6 +83,7 @@ qmis ingest "Master_Report__140826.xlsx" --evaluate
 |---|---|
 | `qmis init-db [--drop] [--admin EMAIL]` | Create the schema |
 | `qmis ingest FILE... [--reprocess] [--evaluate]` | Load one or more workbooks |
+| `qmis load-facts FILE.csv.gz` | Load a pre-aggregated fact export |
 | `qmis watch [--notify] [--dry-run]` | Process everything in the inbox |
 | `qmis evaluate [--period 2026-W33] [--all]` | Re-run the alert engine |
 | `qmis notify [--period KEY] [--dry-run]` | Build and send digests |
@@ -211,6 +212,28 @@ told about the same finding twice running unless it deteriorated.
 
 ---
 
+## When the source file is too large or too sensitive to move
+
+The donation-level export is 45 MB of donor records. Rather than shipping it,
+run the aggregation where the data already lives and move only the result:
+
+```python
+# tools/colab_aggregate_cell.py - runs in Google Colab, reads Drive in place
+pip install --no-deps git+https://github.com/<you>/blank-app@<branch> pyxlsb
+```
+
+It installs and runs **this repository's own aggregation code**, so the facts it
+produces are the same ones the pipeline would compute - there is no second
+implementation to drift. It writes `qmis_facts.csv.gz` (a full multi-year
+history compresses to roughly 1 MB), which loads with:
+
+```bash
+qmis load-facts qmis_facts.csv.gz
+```
+
+`tests/test_donation_level.py` asserts that this route and direct ingestion
+produce byte-identical facts.
+
 ## Deployment
 
 ```bash
@@ -232,7 +255,7 @@ Cloudflare Access, an nginx auth proxy) and have it pass the verified email in
 ## Tests
 
 ```bash
-pytest                                                    # 122 tests
+pytest                                                    # 126 tests
 QMIS_MASTER_REPORT=/path/to/Master_Report.xlsx pytest     # +7 real-file tests
 ```
 
@@ -270,5 +293,5 @@ qmis/
   auth/       role-based access control
   app/        Streamlit pages
 sample_data/  realistic weekly workbook generator
-tests/        122 tests + 7 against the real workbook
+tests/        126 tests + 7 against the real workbook
 ```

@@ -34,6 +34,12 @@ from qmis.core.periods import Period, PeriodError
 
 SOURCE_MAP_FILE = Path(__file__).resolve().parent.parent / "config" / "source_map.yaml"
 
+# Excel stores a date as days since 1899-12-30. Anything in this band is a date
+# somewhere between 2009 and 2036, which covers every reporting period this
+# system will see and excludes ordinary counts and amounts.
+EXCEL_EPOCH = "1899-12-30"
+SERIAL_MIN, SERIAL_MAX = 40000, 50000
+
 
 class AggregationError(ValueError):
     """Raised when a donation-level sheet cannot be folded up."""
@@ -167,6 +173,23 @@ def looks_donation_level(frame: pd.DataFrame, source: SourceMap) -> bool:
 # --------------------------------------------------------------------------- #
 # period resolution
 # --------------------------------------------------------------------------- #
+def to_datetime_column(series: pd.Series) -> pd.Series:
+    """Parse a column of dates, including raw Excel serial numbers.
+
+    The .xlsb reader hands dates back as serial numbers rather than datetimes,
+    and ``pd.to_datetime`` reads a bare 46023.0 as 46,023 NANOSECONDS past the
+    epoch. Every row would land in the same 1970 week and the whole report
+    would be silently wrong, so numeric columns in the serial band are
+    converted from the Excel epoch instead.
+    """
+    numeric = pd.to_numeric(series, errors="coerce")
+    in_band = numeric.between(SERIAL_MIN, SERIAL_MAX)
+    known = numeric.notna()
+    if known.any() and in_band[known].mean() > 0.9:
+        return pd.to_datetime(numeric, unit="D", origin=EXCEL_EPOCH, errors="coerce")
+    return pd.to_datetime(series, errors="coerce", format="mixed")
+
+
 def resolve_period_column(frame: pd.DataFrame, source: SourceMap) -> tuple[pd.Series, str]:
     """Map every row onto a period key using the configured week column."""
     candidates = [source.period.get("column"), *(source.period.get("fallback_columns") or [])]
@@ -174,7 +197,7 @@ def resolve_period_column(frame: pd.DataFrame, source: SourceMap) -> tuple[pd.Se
     for column in candidates:
         if not column or column not in frame.columns:
             continue
-        dates = pd.to_datetime(frame[column], errors="coerce")
+        dates = to_datetime_column(frame[column])
         if dates.notna().mean() < 0.5:
             continue
         keys = dates.map(
@@ -415,3 +438,41 @@ def _check_expectations(facts: pd.DataFrame, source: SourceMap) -> list[str]:
                 f"donors resuming after a missed debit - worth checking the source flags"
             )
     return notes
+
+
+def facts_to_wide(facts: pd.DataFrame, decimals: int = 4) -> pd.DataFrame:
+    """One row per entity/period, one column per metric.
+
+    Long format is right for storage and querying, but for moving a whole
+    history between machines it repeats the entity path and period on every
+    metric. Wide is several times smaller for the same numbers, which is what
+    lets a full multi-year aggregate travel as a single small file.
+    """
+    if facts.empty:
+        return facts
+    index = ["entity_path", "entity_name", "parent_path", "level", "period_key"]
+    wide = facts.pivot_table(
+        index=index, columns="metric_key", values="value", aggfunc="first"
+    ).reset_index()
+    wide.columns.name = None
+    numeric = wide.select_dtypes("number").columns
+    wide[numeric] = wide[numeric].round(decimals)
+    return wide
+
+
+def wide_to_facts(wide: pd.DataFrame) -> pd.DataFrame:
+    """Inverse of :func:`facts_to_wide`, restoring the long fact frame."""
+    index = ["entity_path", "entity_name", "parent_path", "level", "period_key"]
+    present = [c for c in index if c in wide.columns]
+    metrics = [c for c in wide.columns if c not in present]
+    long = wide.melt(
+        id_vars=present, value_vars=metrics, var_name="metric_key", value_name="value"
+    )
+    long = long.loc[long["value"].notna()].copy()
+    if "submissions" in wide.columns:
+        denominators = wide[["entity_path", "period_key", "submissions"]]
+        long = long.merge(denominators, on=["entity_path", "period_key"], how="left")
+        long = long.rename(columns={"submissions": "denominator"})
+    else:
+        long["denominator"] = np.nan
+    return long

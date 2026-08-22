@@ -249,3 +249,84 @@ def test_a_sheet_with_no_date_is_refused(donations, source):
 def test_an_empty_sheet_is_refused(source):
     with pytest.raises(AggregationError):
         aggregate_donations(pd.DataFrame(), source)
+
+
+# --------------------------------------------------------------------------- #
+# compact transport format
+# --------------------------------------------------------------------------- #
+def test_wide_round_trips_back_to_the_same_facts(donations, source):
+    """A full history has to travel as one small file, so it is reshaped wide -
+    and reshaping must not change any number."""
+    from qmis.ingest.aggregation import facts_to_wide, wide_to_facts
+
+    result = aggregate_donations(donations, source)
+    wide = facts_to_wide(result.facts)
+    back = wide_to_facts(wide)
+
+    original = result.facts.set_index(["entity_path", "period_key", "metric_key"])["value"]
+    restored = back.set_index(["entity_path", "period_key", "metric_key"])["value"]
+    assert len(restored) == len(original)
+    joined = original.to_frame("a").join(restored.to_frame("b"), how="inner")
+    assert len(joined) == len(original)
+    assert (joined["a"].round(4) == joined["b"].round(4)).all()
+
+
+def test_wide_is_materially_smaller_than_long(donations, source):
+    from qmis.ingest.aggregation import facts_to_wide
+
+    result = aggregate_donations(donations, source)
+    wide = facts_to_wide(result.facts)
+    long_csv = result.facts.to_csv(index=False).encode()
+    wide_csv = wide.to_csv(index=False).encode()
+    assert len(wide_csv) < len(long_csv) * 0.6
+
+
+def test_the_export_route_and_the_direct_route_agree(donations, source, session, tmp_path):
+    """Aggregating here and aggregating on the far side must give the same facts.
+
+    The whole point of the export route is that the donation file never moves,
+    so the two paths have to be provably interchangeable - otherwise the numbers
+    depend on which way the data happened to travel.
+    """
+    from sqlalchemy import func, select
+
+    from qmis.core.models import Fact
+    from qmis.ingest.aggregation import facts_to_wide
+    from qmis.ingest.pipeline import ingest_fact_export, ingest_file
+
+    workbook = tmp_path / "donations.xlsx"
+    donations.to_excel(workbook, sheet_name="DATA", index=False)
+    direct = ingest_file(session, workbook, uploaded_by="test")
+    assert direct.accepted, direct.message
+    direct_facts = {
+        (e, p, m): round(v, 4)
+        for e, p, m, v in session.execute(
+            select(Fact.entity_id, Fact.period_key, Fact.metric_key, Fact.value)
+            .where(Fact.is_current.is_(True))
+        )
+    }
+
+    export = tmp_path / "qmis_facts.csv.gz"
+    facts_to_wide(aggregate_donations(donations, source).facts).to_csv(
+        export, index=False, compression="gzip"
+    )
+    loaded = ingest_fact_export(session, export, uploaded_by="test", allow_reprocess=True)
+    assert loaded.accepted, loaded.message
+    export_facts = {
+        (e, p, m): round(v, 4)
+        for e, p, m, v in session.execute(
+            select(Fact.entity_id, Fact.period_key, Fact.metric_key, Fact.value)
+            .where(Fact.is_current.is_(True))
+        )
+    }
+    assert direct_facts == export_facts
+
+
+def test_a_file_that_is_not_a_fact_export_is_refused(session, tmp_path):
+    from qmis.ingest.pipeline import ingest_fact_export
+
+    path = tmp_path / "wrong.csv"
+    pd.DataFrame({"a": [1], "b": [2]}).to_csv(path, index=False)
+    result = ingest_fact_export(session, path)
+    assert not result.accepted
+    assert any(f.code == "not_a_fact_export" for f in result.report.errors)
