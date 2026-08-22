@@ -81,6 +81,29 @@ def jsonable(v):
         except Exception: return str(v)
     return v if isinstance(v, (str, int, float, bool)) else str(v)
 
+def uniquify(names):
+    """Make column labels unique.
+
+    A 96-column export repeats labels (several "Amount", several blank). When a
+    label is duplicated, df[label] returns a DataFrame rather than a Series and
+    every per-column operation downstream breaks. pandas does this itself when
+    it parses a header row; here the names are assigned manually, so it has to
+    be done explicitly.
+    """
+    seen, out = {}, []
+    for i, n in enumerate(names):
+        n = str(n).strip() if pd.notna(n) else ""
+        if not n or n.lower() in ("nan", "none"):
+            n = f"unnamed_{i}"
+        if n in seen:
+            seen[n] += 1
+            n = f"{n}.{seen[n]}"
+        else:
+            seen[n] = 0
+        out.append(n)
+    return out
+
+
 def header_row(raw):
     best, score_best = 0, -1
     for i in range(min(25, len(raw))):
@@ -101,8 +124,7 @@ for name, raw in book.items():
     if raw.empty: continue
     h = header_row(raw)
     df = raw.iloc[h+1:].copy()
-    df.columns = [str(c).strip() if pd.notna(c) else f"unnamed_{i}"
-                  for i, c in enumerate(raw.iloc[h].tolist())]
+    df.columns = uniquify(raw.iloc[h].tolist())
     df = df.dropna(how="all").dropna(axis=1, how="all").infer_objects()
 
     # pyxlsb hands back dates as Excel serial numbers, not datetimes
