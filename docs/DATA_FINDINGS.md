@@ -148,3 +148,121 @@ without them but will be sharper with them.
    snapshot?** This decides assumption 5 above.
 6. **At what BA volume should an individual BA be judged?** The default is 15
    submissions in the rolling window; the statistics argue for more.
+
+---
+
+# Part 2 — the raw source file (`Raw_Data.xlsb`, 45 MB)
+
+Profiled 22 Aug 2026 via Colab, reading the file in place from Drive. This is
+the file the Master Report is pivoted from, and it answers most of Part 1's
+open questions.
+
+## 1. It is donation-level, not a BA-week summary
+
+| Sheet | Shape | What it is |
+|---|---|---|
+| **`DATA`** | **308,922 x 96** | **One row per submission.** The fact table. |
+| `Owner Details` | 72 x 7 | Owner master: CODE, OWNER NAME, ORG, CITY, REGION, COMPANY NAME |
+| `Owner Indv` | 52 x 5 | 52 Sr. Leader owners with codes and full names |
+| `Sheet1` | 3,993 x 7 | Billing-failure reason lookup |
+| `Sheet2`, `Sheet3` | 5 x 96, 94 x 6 | Scratch / column checklists |
+
+**308,922 is exactly the Master Report's `Sum of SUBMISSION` Grand Total.** The
+source is confirmed, and the grain question from Part 1 §9.1 is answered: one
+row per submission, with the full hierarchy on every row.
+
+## 2. Every measure reproduced exactly
+
+| Measure | Raw source | Total | Master Report |
+|---|---|---|---|
+| `debit1` | flag column | 272,881 | 272,881 ✓ |
+| `DEBIT3` | flag column | 208,147 | 208,147 ✓ |
+| `Pledge To OT` | flag column | 30,166 | 30,166 ✓ |
+| `Below 30` | flag column | 84,273 | 84,273 ✓ |
+| `Average of Donamt` | mean | 778.3138 | 778.3138 ✓ |
+
+Three measures are not columns at all and were solved from those totals:
+
+```
+RJBD1    = Insuff b4 debit + Stop b4 debit + Tech Error + Other Errors
+           20,856 + 1,237 + 10,047 + 2,067            = 34,207   exact
+Net Loss = RJBD1 + Pledge To OT
+           34,207 + 30,166                            = 64,373   exact
+40+      = age group in (40-44, 45-49, Above 50)
+           32,718 + 16,085 + 17,792                   = 66,595   exact
+```
+
+`Net Loss = RJBD1 + Pledge To OT` is worth stating plainly: a "loss" is a donor
+who never reached the first debit **or** one who downgraded from a regular
+pledge to a single gift. All three derivations are encoded in
+`qmis/config/source_map.yaml` and asserted in `tests/test_donation_level.py`.
+
+## 3. The weekly grain already exists: `WE Date`
+
+138 distinct values, always a Monday, 0–6 days after `SigninDT`. This is the
+week bucket the business already reports on, so the system uses it rather than
+deriving its own week from the sign-in date — which keeps its weeks identical
+to theirs.
+
+## 4. The hierarchy is deeper than the Master Report showed
+
+```
+ORG (6)  ->  ORG 2 (19)  ->  OWNER NAME (56)  ->  BAName (3,899)
+```
+
+with `REGION` (3) and `CITY` (24) as Owner attributes, and `Designation`
+(Sr. Leader / Leader / New Guy) as a BA attribute.
+
+Note **3,899 BAs and 56 Owners, not the ~650 and ~44 in the brief** — those are
+cumulative over 2.7 years, whereas ~650 is the active-in-a-week figure. Median
+52.5 BAs per Owner, max 312. 124 BAs appear under more than one Owner across
+history, which is ordinary movement between teams over that span.
+
+## 5. Case-split entities — a real correctness bug in the source
+
+The same entity is spelled several ways, and left alone each spelling becomes a
+separate entity with its own diluted rates:
+
+| Column | Spellings | Real values | Examples |
+|---|---|---|---|
+| `REGION` | 6 | **3** | `SOUTH` (38,107) vs `South` (174,513) |
+| `ORG 2` | 19 | **13** | `TRIFORCE`/`Triforce`, `WELKINZ`/`Welkinz`, `ALZA`/`Alza` |
+| `SourceofDonation` | 17 | **9** | `PAid_Permission`, `Paid_PermissIon`, `Paid_permission` |
+| `GENDER` | 9 | **5** | `MALE`, `M`, `Male ` |
+
+Resolved by canonicalising each column on **frequency** rather than by guessing
+from the shape of the string: `Alza` (14,009) beats `ALZA` (3,576), while `KOP`
+and `PVR` have no rival spelling and are left alone. An earlier heuristic that
+preserved short all-capitals tokens as acronyms kept `ALZA` apart from `Alza` —
+exactly the split it was meant to fix.
+
+Residual: variants differing by punctuation (`Paid-Permission` vs
+`Paid_Permission`) are still distinct. Worth a source-side fix.
+
+## 6. The debit ladder is not a survival curve
+
+~8% of rows have a donor paying a later debit after missing an earlier one
+(`Debit4=1` while `DEBIT3=0`) — a failed collection can be retried or resumed.
+Strict monotonicity would fire on every week, so the check now tolerates 15% and
+reports only an excess above that.
+
+## 7. Data quality worth raising with the business
+
+- **`Donamt` max is 800,801** against a median of 800 — a data-entry error
+  inflating any total that includes it.
+- **`AGE` ranges 0 to 125**; 129 rows have `NO DOB`.
+- `BILLINGFAILEDDT`, `Debit DT 3` and `DOB` are stored as raw Excel serial
+  numbers rather than dates.
+- `Overall Reject` (69,826) is not the sum of the named reject reasons; the
+  taxonomy overlaps and would need the business to define precedence.
+
+## 8. Open questions now answered
+
+| Part 1 question | Answer |
+|---|---|
+| §9.1 Can the export carry Owner and BA? | **Yes** — both are on every row, plus ORG and ORG 2 |
+| §9.5 Cohort or point-in-time snapshot? | **Point-in-time.** Every debit stage is a flag on the donation row, updated as collections happen. A weekly maturity lag is therefore not needed; the monthly lag stays. |
+| §9.6 What volume should a BA be judged at? | Unchanged — ~2,300 submissions a week across ~650 active BAs |
+
+Still open: **§9.2** (is a higher or lower `OT%`, `Below 30%`, `40+%` good?),
+**§9.3** (the real Debit 3 target), **§9.4** (the RJBD1 target).

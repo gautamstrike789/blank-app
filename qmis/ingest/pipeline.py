@@ -22,6 +22,8 @@ from qmis.core.metric_config import MetricRegistry, get_registry
 from qmis.core.models import (
     BA,
     ISSUE_ERROR,
+    ISSUE_INFO,
+    ISSUE_WARNING,
     ORG,
     OWNER,
     TEAM,
@@ -37,21 +39,33 @@ from qmis.core.models import (
 from qmis.core.periods import Period
 from qmis.ingest.readers import (
     ColumnMap,
+    excel_engine,
     ParsedSheet,
     ReaderError,
     infer_period_from_filename,
     pick_best_sheet,
     read_workbook,
 )
+from qmis.ingest.aggregation import (
+    AggregationError,
+    AggregationResult,
+    SourceMap,
+    aggregate_donations,
+    looks_donation_level,
+)
 from qmis.ingest.storage import StorageBackend, sha256_file
 from qmis.ingest.validation import (
     Finding,
     ValidationContext,
     ValidationReport,
+    check_duplicate_upload,
     validate,
 )
 
 ORG_ENTITY_NAME = "Organisation"
+# Rows read when sniffing whether a sheet is donation-level. Enough to see the
+# flag columns without pulling 300,000 rows twice.
+DETECTION_ROWS = 500
 COLUMN_SIGNATURE_KEY = "ingest.column_signature"
 
 
@@ -247,6 +261,13 @@ def ingest_file(
     session.add(upload)
     session.flush()
 
+    # -- donation-level source? -------------------------------------------
+    # The weekly export is one row per submission, not a BA-week summary, so
+    # try folding it up before falling back to the summary reader.
+    aggregated = _try_donation_level(path, sheet_name)
+    if aggregated is not None:
+        return _ingest_aggregated(session, upload, aggregated, registry, digest, filename, ctx)
+
     # -- read ------------------------------------------------------------
     try:
         sheets = read_workbook(
@@ -317,6 +338,188 @@ def ingest_file(
             f"{len(period_keys)} period(s) from sheet {parsed.layout.sheet_name!r}"
         ),
     )
+
+
+def _try_donation_level(
+    path: Path, sheet_name: str | None = None
+) -> tuple[AggregationResult, str] | None:
+    """Fold a donation-level sheet up to entity/period facts, or return None.
+
+    Returns None rather than raising when the workbook is a pre-aggregated
+    summary, so the ordinary reader still handles the Master Report and any
+    BA-week export unchanged.
+    """
+    source = SourceMap.load()
+    try:
+        book = pd.read_excel(
+            path, sheet_name=None, engine=excel_engine(path), nrows=DETECTION_ROWS
+        )
+    except Exception:
+        return None
+
+    candidates: list[tuple[str, int]] = []
+    for name, head in book.items():
+        if sheet_name and name != sheet_name:
+            continue
+        if head.empty:
+            continue
+        head.columns = [str(c).strip() for c in head.columns]
+        if looks_donation_level(head, source):
+            candidates.append((name, len(head.columns)))
+    if not candidates:
+        return None
+
+    # Widest sheet wins: the real fact table carries every flag, while a
+    # scratch sheet that happens to share a few column names does not.
+    best = max(candidates, key=lambda c: c[1])[0]
+    frame = pd.read_excel(path, sheet_name=best, engine=excel_engine(path))
+    frame.columns = [str(c).strip() for c in frame.columns]
+    try:
+        return aggregate_donations(frame, source), best
+    except AggregationError:
+        return None
+
+
+def _ingest_aggregated(
+    session: Session,
+    upload: Upload,
+    payload: tuple[AggregationResult, str],
+    registry: MetricRegistry,
+    digest: str,
+    filename: str,
+    ctx: ValidationContext,
+) -> IngestResult:
+    """Validate and load facts that came from donation-level aggregation."""
+    result, sheet = payload
+    upload.sheet_name = sheet
+    upload.grain = "weekly"
+    upload.row_count = result.source_rows
+    upload.profile = "donation_level"
+    upload.period_min = result.periods[0] if result.periods else None
+    upload.period_max = result.periods[-1] if result.periods else None
+    upload.period_key = upload.period_max
+
+    report = ValidationReport()
+    report.add(*check_duplicate_upload(digest, filename, result.periods, ctx))
+    for note in result.warnings:
+        report.add(Finding(ISSUE_WARNING, "aggregation_note", note))
+    report.add(
+        Finding(
+            ISSUE_INFO,
+            "donation_level_source",
+            f"Sheet {sheet!r} is donation-level ({result.source_rows:,} submissions). "
+            f"Metrics were derived from the source flags and aggregated to "
+            f"{len(result.periods)} week(s) across {len(result.entities):,} entities.",
+        )
+    )
+    _persist_issues(session, upload, report)
+
+    if not report.ok:
+        upload.status = UPLOAD_REJECTED
+        upload.notes = "; ".join(f.message for f in report.errors)[:4000]
+        session.flush()
+        return IngestResult(
+            upload.id, filename, False, report, periods=result.periods, grain="weekly",
+            sheet_name=sheet, entity_level="ba",
+            message=f"Rejected: {report.errors[0].message}",
+        )
+
+    loaded, superseded, entity_count = _load_aggregated_facts(session, upload, result, registry)
+    upload.status = UPLOAD_LOADED
+    upload.fact_count = loaded
+    upload.entity_count = entity_count
+    _mark_superseded_uploads(session, upload, result.periods)
+    session.flush()
+    return IngestResult(
+        upload.id, filename, True, report, periods=result.periods, grain="weekly",
+        sheet_name=sheet, entity_level="ba", facts_loaded=loaded,
+        entities_seen=entity_count, superseded_facts=superseded,
+        message=(
+            f"Aggregated {result.source_rows:,} submissions into {loaded:,} values for "
+            f"{entity_count:,} entities across {len(result.periods)} week(s)"
+        ),
+    )
+
+
+def _load_aggregated_facts(
+    session: Session,
+    upload: Upload,
+    result: AggregationResult,
+    registry: MetricRegistry,
+) -> tuple[int, int, int]:
+    """Create the entity tree from paths, then store the facts against it."""
+    by_path: dict[str, Entity] = {}
+    # Shallowest first, so a parent always exists before its children.
+    entities = result.entities.assign(
+        _depth=result.entities["entity_path"].str.count(r"\|")
+    ).sort_values("_depth")
+
+    for row in entities.itertuples(index=False):
+        parent = by_path.get(row.parent_path) if row.parent_path else None
+        key = normalise_name(row.entity_name)
+        entity = session.execute(
+            select(Entity).where(
+                Entity.entity_type == row.level, Entity.normalised_name == key
+            )
+        ).scalar_one_or_none()
+        if entity is None:
+            entity = Entity(
+                entity_type=row.level,
+                name=str(row.entity_name).strip(),
+                normalised_name=key,
+                parent_id=parent.id if parent is not None else None,
+                active=True,
+            )
+            session.add(entity)
+            session.flush()
+        elif parent is not None and entity.parent_id != parent.id:
+            entity.parent_id = parent.id
+        by_path[row.entity_path] = entity
+    session.flush()
+
+    facts = result.facts
+    periods = sorted(facts["period_key"].unique())
+    entity_ids = [e.id for e in by_path.values()]
+    superseded = 0
+    for period_key in periods:
+        for start in range(0, len(entity_ids), 500):
+            chunk = entity_ids[start : start + 500]
+            outcome = session.execute(
+                update(Fact)
+                .where(
+                    Fact.period_key == period_key,
+                    Fact.entity_id.in_(chunk),
+                    Fact.is_current.is_(True),
+                )
+                .values(is_current=False)
+            )
+            superseded += int(outcome.rowcount or 0)
+
+    known = set(registry.keys)
+    payload: list[dict] = []
+    for row in facts.itertuples(index=False):
+        if row.metric_key not in known:
+            continue  # a measure with no configured rule is stored nowhere
+        entity = by_path.get(row.entity_path)
+        if entity is None or pd.isna(row.value):
+            continue
+        payload.append(
+            {
+                "entity_id": entity.id,
+                "period_key": str(row.period_key),
+                "grain": "weekly",
+                "metric_key": str(row.metric_key),
+                "value": float(row.value),
+                "source_value": float(row.value),
+                "denominator": None if pd.isna(row.denominator) else float(row.denominator),
+                "upload_id": upload.id,
+                "is_derived": False,
+                "is_current": True,
+            }
+        )
+    if payload:
+        session.bulk_insert_mappings(Fact, payload)
+    return len(payload), superseded, len(by_path)
 
 
 def _persist_issues(session: Session, upload: Upload, report: ValidationReport) -> None:

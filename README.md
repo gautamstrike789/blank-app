@@ -11,8 +11,18 @@ donations in the field, monitoring ~42 quality metrics.
 
 ## What it does
 
+**Reads the real export.** The weekly file is one row per submission — 308,922
+rows across 96 columns — not a pre-aggregated summary. The system folds it up to
+(entity x week x metric) itself, deriving every measure from the source flags.
+Three measures aren't columns at all and were solved against the Master Report's
+own totals: `RJBD1 = Insuff b4 debit + Stop b4 debit + Tech Error + Other
+Errors`, `Net Loss = RJBD1 + Pledge To OT`, `40+ = age group in (40-44, 45-49,
+Above 50)`. All three reproduce it exactly.
+
 **Detects.** Watches a folder (or a synced Drive/OneDrive/SharePoint folder),
-picks up new weekly workbooks, and processes them on a schedule.
+picks up new weekly workbooks, and processes them on a schedule. A
+pre-aggregated summary and a donation-level export are both handled; the reader
+works out which it has.
 
 **Refuses bad data.** Eleven validation rules run before anything is stored. A
 changed column, a duplicated BA, a rate that contradicts its own components, a
@@ -96,6 +106,11 @@ qmis ingest "Master_Report__140826.xlsx" --evaluate
 
 Access is role-based — `admin`, `management`, `owner` — and an Owner's scope is
 enforced in the query, not by hiding controls.
+
+The hierarchy read from the source is **ORG (6) → ORG 2 (19) → Owner (56) → BA
+(3,899)**, with Region and City as Owner attributes. Values that differ only by
+case are merged onto the more frequent spelling, so `SOUTH`/`South` and
+`ALZA`/`Alza` do not become separate entities with diluted rates.
 
 ---
 
@@ -217,7 +232,7 @@ Cloudflare Access, an nginx auth proxy) and have it pass the verified email in
 ## Tests
 
 ```bash
-pytest                                                    # 93 tests
+pytest                                                    # 122 tests
 QMIS_MASTER_REPORT=/path/to/Master_Report.xlsx pytest     # +7 real-file tests
 ```
 
@@ -244,14 +259,16 @@ RBAC scoping, notification routing, and the whole pipeline end to end.
 
 ```
 qmis/
-  config/     metrics.yaml (42 metrics), settings.yaml, column_map.yaml
+  config/     metrics.yaml (42 metrics), source_map.yaml (donation-level
+              derivations), settings.yaml, column_map.yaml
   core/       periods, metric registry, ORM models, database, settings
-  ingest/     storage backends, readers, validation, pipeline, watcher
+  ingest/     storage backends, readers, aggregation (donation-level),
+              validation, pipeline, watcher
   analytics/  matrix, comparison, anomaly, significance, severity,
               grouping, rolling, rollup, scoring, engine, repository
   notify/     routing and channels (console, email, Slack/Teams)
   auth/       role-based access control
   app/        Streamlit pages
 sample_data/  realistic weekly workbook generator
-tests/        93 tests + 7 against the real workbook
+tests/        122 tests + 7 against the real workbook
 ```

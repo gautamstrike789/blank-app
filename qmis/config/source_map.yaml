@@ -1,0 +1,148 @@
+# =============================================================================
+# Donation-level source definition.
+#
+# The weekly export (Raw_Data.xlsb, sheet DATA) is ONE ROW PER SUBMISSION -
+# 308,922 rows x 96 columns covering Dec 2023 to Aug 2026 - not a pre-aggregated
+# BA-week summary. Every metric in the Master Report is a sum or a mean over
+# these rows.
+#
+# This file says how to fold that into (entity x week x metric) facts. All of it
+# was verified against the Master Report's Grand Total column:
+#
+#   debit1        272,881   D1%  88.33%    exact match
+#   DEBIT3        208,147   D3%  67.38%    exact match
+#   Pledge To OT   30,166   OT%   9.76%    exact match
+#   Below 30       84,273        27.28%    exact match
+#   Avg Donamt     778.3138                exact match
+#
+# and the three derived measures were solved from the same totals:
+#
+#   RJBD1     = Insuff b4 debit + Stop b4 debit + Tech Error + Other Errors
+#               20,856 + 1,237 + 10,047 + 2,067          = 34,207  exact
+#   Net Loss  = RJBD1 + Pledge To OT
+#               34,207 + 30,166                          = 64,373  exact
+#   40+       = age group in (40-44, 45-49, Above 50)
+#               32,718 + 16,085 + 17,792                 = 66,595  exact
+# =============================================================================
+version: 1
+
+# How a donation-level sheet is recognised. A sheet must have the period column,
+# at least one entity column, and this many flag columns to qualify.
+detection:
+  min_flag_columns: 8
+  required_any: [SUBMISSION, FormNo]
+
+period:
+  # WE Date is the week bucket the business already reports on: it is always a
+  # Monday and sits 0-6 days after SigninDT. Using it rather than deriving a
+  # week from SigninDT keeps this system's weeks identical to theirs.
+  column: WE Date
+  grain: weekly
+  fallback_columns: [SigninDT, QASInDate]
+
+# Org -> Sub-org -> Owner -> BA. REGION and CITY describe an Owner rather than
+# sitting in the ownership chain, so they are attributes, not levels.
+hierarchy:
+  - level: org
+    column: ORG
+  - level: sub_org
+    column: ORG 2
+  - level: owner
+    column: OWNER NAME
+    code_column: OWNCODE
+  - level: ba
+    column: BAName
+    code_column: BACode
+
+attributes:
+  owner: [CITY, REGION]
+  ba: [Designation]
+
+# Values that differ only by case or spacing are the same thing. Left alone,
+# "South"/"SOUTH" and "Triforce"/"TRIFORCE" split one region or company into
+# two, and every rate computed over them is wrong.
+normalise_values:
+  columns: [ORG, ORG 2, REGION, CITY, OWNER NAME, BAName, Designation,
+            SourceofDonation, Events, EventName, GENDER, age group, MOP]
+  method: title_case_collapse_whitespace
+
+measures:
+  # --- direct sums of a flag column ---------------------------------------
+  submissions:        {sum: SUBMISSION}
+  debit1_count:       {sum: debit1}
+  debit3_count:       {sum: DEBIT3}
+  pledge_to_ot_count: {sum: Pledge To OT}
+  subs_below_30_count: {sum: Below 30}
+  donation_amount:    {sum: Donamt}
+
+  # --- derived: sum of several flags ---------------------------------------
+  rjbd1_count:
+    sum_of: [Insuff b4 debit, Stop b4 debit, Tech Error, Other Errors]
+    note: "verified against Master Report Grand Total 34,207"
+
+  net_loss_count:
+    sum_of_measures: [rjbd1_count, pledge_to_ot_count]
+    note: "verified against Master Report Grand Total 64,373"
+
+  # --- derived: count rows whose column value is in a set ------------------
+  subs_40_plus_count:
+    count_where:
+      column: age group
+      in: ["40-44", "45-49", "Above 50"]
+    note: "verified against Master Report Grand Total 66,595"
+
+  # --- means ----------------------------------------------------------------
+  avg_donation_amount: {mean: Donamt}
+  ads_30_minus:
+    mean: Donamt
+    where: {column: Below 30, equals: 1}
+  ads_40_plus:
+    mean: Donamt
+    where: {column: age group, in: ["40-44", "45-49", "Above 50"]}
+
+  # --- the debit ladder -----------------------------------------------------
+  d2_count:  {sum: Debit2}
+  d4_count:  {sum: Debit4}
+  d5_count:  {sum: Debit5}
+  d6_count:  {sum: Debit6}
+  d7_count:  {sum: Debit7}
+  d8_count:  {sum: Debit8}
+  d9_count:  {sum: Debit9}
+  d10_count: {sum: Debit10}
+  d11_count: {sum: Debit11}
+  d12_count: {sum: Debit12}
+
+# Rates are recomputed from the summed components at every level, never
+# averaged from a lower one.
+rates:
+  d1_pct:            {numerator: debit1_count,        denominator: submissions}
+  d2_pct:            {numerator: d2_count,            denominator: submissions}
+  d3_pct:            {numerator: debit3_count,        denominator: submissions}
+  d4_pct:            {numerator: d4_count,            denominator: submissions}
+  d5_pct:            {numerator: d5_count,            denominator: submissions}
+  d6_pct:            {numerator: d6_count,            denominator: submissions}
+  d7_pct:            {numerator: d7_count,            denominator: submissions}
+  d8_pct:            {numerator: d8_count,            denominator: submissions}
+  d9_pct:            {numerator: d9_count,            denominator: submissions}
+  d10_pct:           {numerator: d10_count,           denominator: submissions}
+  d11_pct:           {numerator: d11_count,           denominator: submissions}
+  d12_pct:           {numerator: d12_count,           denominator: submissions}
+  rjbd1_pct:         {numerator: rjbd1_count,         denominator: submissions}
+  net_loss_pct:      {numerator: net_loss_count,      denominator: submissions}
+  ot_pct:            {numerator: pledge_to_ot_count,  denominator: submissions}
+  subs_below_30_pct: {numerator: subs_below_30_count, denominator: submissions}
+  subs_40_plus_pct:  {numerator: subs_40_plus_count,  denominator: submissions}
+
+# Sanity checks run at aggregation time; failures surface as validation issues
+# rather than silently producing a wrong dashboard.
+expectations:
+  ladder_monotonic: [d1_pct, d2_pct, d3_pct, d4_pct, d5_pct, d6_pct,
+                     d7_pct, d8_pct, d9_pct, d10_pct, d11_pct, d12_pct]
+  # The ladder is NOT a pure survival curve. In the source, ~8% of rows have a
+  # donor paying a later debit after missing an earlier one (Debit4=1 while
+  # DEBIT3=0), because a failed collection can be retried or resumed. Small
+  # non-monotonicity is therefore normal and only a large excess is worth
+  # reporting; treating any breach as a fault would fire on every single week.
+  ladder_monotonic_tolerance_pct: 15.0
+  max_rate_pct: 100.5
+  donation_amount_max: 100000     # Donamt max in the source is 800,801 - a typo
