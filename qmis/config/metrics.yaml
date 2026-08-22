@@ -1,0 +1,819 @@
+# =============================================================================
+# QMIS metric registry  --  the single place metric behaviour is defined.
+#
+#   direction : higher_is_better | lower_is_better | target_range | neutral
+#   unit      : percent | count | currency | number
+#   stored_as : how the SOURCE file holds the value.  `fraction` means the Excel
+#               cell holds 0.8864 for 88.64% and the loader multiplies by 100.
+#               Every percent metric is STORED in the database as 0-100.
+#   thresholds: interpreted by direction (see metric_config.MetricDefinition).
+#   weight    : contribution to the 0-100 Quality Score (only when
+#               include_in_score is true).  Weights are renormalised over the
+#               metrics that actually have data, so a missing metric does not
+#               silently deflate a score.
+#   maturity_lag: periods a metric needs before its value is meaningful.  Debit 3
+#               cannot be judged until ~2 monthly cycles have elapsed; alerting
+#               on an immature period would produce a guaranteed false RED.
+#   needs_review: true means the business direction has NOT been confirmed by
+#               the business owner.  Such metrics are tracked and trended but
+#               never raise alerts and never enter the quality score.
+#
+# Thresholds below are calibrated on the organisation-level monthly
+# distribution observed in Master_Report__140826.xlsx (Dec 2023 - Aug 2026).
+# They are starting points for the business owner to tune in Admin > Metrics.
+# =============================================================================
+version: 1
+defaults:
+  unit: percent
+  stored_as: fraction
+  decimals: 2
+  alert_on_weekly_change: true
+  percentage_change_threshold: 10.0
+  critical_change_multiplier: 2.0
+  consecutive_decline_periods: 3
+  min_denominator: 30
+  denominator: submissions
+  include_in_score: false
+  weight: 0
+  group: Quality
+  anomaly:
+    enabled: true
+    lookback: 8
+    min_history: 4
+    z_threshold: 2.5
+    relative_threshold: 25.0
+    method: robust
+metrics:
+- key: submissions
+  name: Submissions
+  aliases:
+  - Sum of SUBMISSION
+  - SUBMISSION
+  - SUBS
+  - Submission
+  group: Volume
+  unit: count
+  stored_as: raw
+  direction: neutral
+  decimals: 0
+  denominator: null
+  min_denominator: null
+  alert_on_weekly_change: true
+  percentage_change_threshold: 25.0
+  description: Total signed submissions in the period. Denominator for every rate metric.
+- key: debit1_count
+  name: Debit 1 count
+  aliases:
+  - Sum of debit1
+  - debit1
+  - Debit1
+  group: Volume
+  unit: count
+  stored_as: raw
+  direction: neutral
+  decimals: 0
+  denominator: null
+  min_denominator: null
+  alert_on_weekly_change: false
+  description: Donors who completed their first debit. Numerator of Debit 1 %.
+- key: debit3_count
+  name: Debit 3 count
+  aliases:
+  - Sum of DEBIT3
+  - DEBIT3
+  - Debit3
+  group: Volume
+  unit: count
+  stored_as: raw
+  direction: neutral
+  decimals: 0
+  denominator: null
+  min_denominator: null
+  alert_on_weekly_change: false
+  description: Donors who completed their third debit. Numerator of Debit 3 %.
+- key: rjbd1_count
+  name: Rejects before Debit 1 (count)
+  aliases:
+  - Rejects Before Debit 1
+  - RJBD1 count
+  - Rejects before debit1
+  group: Volume
+  unit: count
+  stored_as: raw
+  direction: neutral
+  decimals: 0
+  denominator: null
+  min_denominator: null
+  alert_on_weekly_change: false
+  description: Donors rejected before their first debit. Numerator of RJBD1 %.
+- key: net_loss_count
+  name: Net loss (count)
+  aliases:
+  - Net Loss
+  group: Volume
+  unit: count
+  stored_as: raw
+  direction: neutral
+  decimals: 0
+  denominator: null
+  min_denominator: null
+  alert_on_weekly_change: false
+  description: Donors lost after acquisition. Numerator of Net loss %.
+- key: pledge_to_ot_count
+  name: Pledge to one-time (count)
+  aliases:
+  - Sum of Pledge To OT
+  - Pledge To OT
+  group: Volume
+  unit: count
+  stored_as: raw
+  direction: neutral
+  decimals: 0
+  denominator: null
+  min_denominator: null
+  alert_on_weekly_change: false
+  description: Regular pledges converted to a single one-time gift.
+- key: subs_below_30_count
+  name: Submissions below 30 (count)
+  aliases:
+  - Subs Below 30
+  - Below 30
+  group: Volume
+  unit: count
+  stored_as: raw
+  direction: neutral
+  decimals: 0
+  denominator: null
+  min_denominator: null
+  alert_on_weekly_change: false
+  description: Donors acquired in the under-30 age band.
+- key: subs_40_plus_count
+  name: Submissions 40+ (count)
+  aliases:
+  - 40+
+  group: Volume
+  unit: count
+  stored_as: raw
+  direction: neutral
+  decimals: 0
+  denominator: null
+  min_denominator: null
+  alert_on_weekly_change: false
+  description: Donors acquired in the 40-and-over age band.
+- key: donation_amount
+  name: Total donation amount
+  aliases:
+  - Sum of Donamt
+  - Donamt
+  group: Volume
+  unit: currency
+  stored_as: raw
+  direction: neutral
+  decimals: 0
+  denominator: null
+  min_denominator: null
+  alert_on_weekly_change: true
+  percentage_change_threshold: 25.0
+  description: Total annualised pledge value signed in the period.
+- key: d1_pct
+  name: Debit 1 %
+  aliases:
+  - D1%
+  - D1 %
+  - Debit 1
+  - Debit1%
+  - Debit 1%
+  direction: higher_is_better
+  target: 90.0
+  warning_threshold: 85.0
+  critical_threshold: 80.0
+  weight: 20
+  include_in_score: true
+  numerator: debit1_count
+  percentage_change_threshold: 4.0
+  absolute_change_threshold: 3.0
+  description: 'Share of submissions that reached their first debit. The organisation''s primary acquisition-quality
+    gate. Business threshold: 80%.'
+  level_overrides:
+    ba:
+      # At ~3.6 submissions per BA per week, a weekly BA rate is arithmetic
+      # noise; evaluation therefore runs on a 4-week rolling window (~14
+      # submissions for a typical BA). 15 is the smallest sample at which a
+      # rate resolves to better than +/-7pp, so it is the point below which a
+      # BA is reported but not alerted on.
+      min_denominator: 15
+- key: d3_pct
+  name: Debit 3 %
+  aliases:
+  - D3%
+  - D3 %
+  - Debit 3
+  - Debit3%
+  - Debit 3%
+  direction: higher_is_better
+  target: 73.0
+  warning_threshold: 68.0
+  critical_threshold: 64.0
+  weight: 20
+  include_in_score: true
+  numerator: debit3_count
+  percentage_change_threshold: 5.0
+  absolute_change_threshold: 3.0
+  maturity_lag:
+    weekly: 0
+    monthly: 3
+  description: Share of submissions still giving at their third debit. The clearest early signal of donor
+    quality as opposed to sign-up volume.
+  level_overrides:
+    ba:
+      # At ~3.6 submissions per BA per week, a weekly BA rate is arithmetic
+      # noise; evaluation therefore runs on a 4-week rolling window (~14
+      # submissions for a typical BA). 15 is the smallest sample at which a
+      # rate resolves to better than +/-7pp, so it is the point below which a
+      # BA is reported but not alerted on.
+      min_denominator: 15
+- key: rjbd1_pct
+  name: RJBD1 %
+  aliases:
+  - Rejects Before Debit 1%
+  - RJBD1
+  - Rejects before debit 1 %
+  - RJBD 1%
+  direction: lower_is_better
+  target: 9.5
+  warning_threshold: 12.0
+  critical_threshold: 14.0
+  weight: 25
+  include_in_score: true
+  numerator: rjbd1_count
+  percentage_change_threshold: 10.0
+  absolute_change_threshold: 1.5
+  description: Rejects before the first debit, as a share of submissions. Lower is better - an increase
+    is a NEGATIVE quality movement.
+  level_overrides:
+    ba:
+      # At ~3.6 submissions per BA per week, a weekly BA rate is arithmetic
+      # noise; evaluation therefore runs on a 4-week rolling window (~14
+      # submissions for a typical BA). 15 is the smallest sample at which a
+      # rate resolves to better than +/-7pp, so it is the point below which a
+      # BA is reported but not alerted on.
+      min_denominator: 15
+- key: net_loss_pct
+  name: Net loss %
+  aliases:
+  - Net Loss%
+  - Net Loss %
+  - NetLoss%
+  direction: lower_is_better
+  target: 19.0
+  warning_threshold: 22.0
+  critical_threshold: 24.0
+  weight: 12
+  include_in_score: true
+  numerator: net_loss_count
+  percentage_change_threshold: 8.0
+  absolute_change_threshold: 2.0
+  description: Donors lost as a share of submissions. Lower is better.
+  level_overrides:
+    ba:
+      # At ~3.6 submissions per BA per week, a weekly BA rate is arithmetic
+      # noise; evaluation therefore runs on a 4-week rolling window (~14
+      # submissions for a typical BA). 15 is the smallest sample at which a
+      # rate resolves to better than +/-7pp, so it is the point below which a
+      # BA is reported but not alerted on.
+      min_denominator: 15
+- key: avg_donation_amount
+  name: Average donation amount
+  aliases:
+  - Average of Donamt
+  - Avg Donamt
+  - ADS
+  group: Value
+  unit: currency
+  stored_as: raw
+  direction: higher_is_better
+  target: 800.0
+  warning_threshold: 750.0
+  critical_threshold: 720.0
+  decimals: 0
+  weight: 7
+  include_in_score: true
+  denominator: null
+  percentage_change_threshold: 5.0
+  description: Average annualised pledge value per submission.
+- key: ot_pct
+  name: Pledge to one-time %
+  aliases:
+  - OT%
+  - OT %
+  direction: neutral
+  needs_review: true
+  review_note: Direction not confirmed by the business owner. Tracked and trended, but excluded from alerting
+    and the quality score until confirmed.
+  numerator: pledge_to_ot_count
+  alert_on_weekly_change: false
+  description: Share of submissions converted from a regular pledge to a one-time gift.
+- key: subs_below_30_pct
+  name: Submissions below 30 %
+  aliases:
+  - Subs Below 30%
+  - Below 30 %
+  - Subs below 30 %
+  group: Segment
+  direction: neutral
+  needs_review: true
+  review_note: Direction not confirmed by the business owner. Tracked and trended, but excluded from alerting
+    and the quality score until confirmed.
+  numerator: subs_below_30_count
+  alert_on_weekly_change: false
+  description: Share of submissions from donors under 30.
+- key: subs_40_plus_pct
+  name: Submissions 40+ %
+  aliases:
+  - 40+ %
+  - 40+%
+  group: Segment
+  direction: neutral
+  needs_review: true
+  review_note: Direction not confirmed by the business owner. Tracked and trended, but excluded from alerting
+    and the quality score until confirmed.
+  numerator: subs_40_plus_count
+  alert_on_weekly_change: false
+  description: Share of submissions from donors aged 40 and over.
+- key: ads_30_minus
+  name: ADS under 30
+  aliases:
+  - 30- ADS
+  - 30 - ADS
+  - ADS 30-
+  group: Segment
+  unit: currency
+  stored_as: raw
+  direction: higher_is_better
+  target: 790.0
+  warning_threshold: 730.0
+  critical_threshold: 700.0
+  decimals: 0
+  denominator: null
+  percentage_change_threshold: 6.0
+  description: Average donation size within the under-30 segment.
+- key: ads_40_plus
+  name: ADS 40+
+  aliases:
+  - 40+ ADS
+  - ADS 40+
+  group: Segment
+  unit: currency
+  stored_as: raw
+  direction: higher_is_better
+  target: 820.0
+  warning_threshold: 775.0
+  critical_threshold: 750.0
+  decimals: 0
+  denominator: null
+  percentage_change_threshold: 6.0
+  description: Average donation size within the 40-and-over segment.
+- key: d2_pct
+  family: debit_ladder
+  name: Debit 2 %
+  aliases:
+  - D2%
+  - D2 %
+  - Debit 2
+  - Debit2%
+  group: Debit ladder
+  direction: higher_is_better
+  target: 75.9
+  warning_threshold: 72.9
+  critical_threshold: 69.9
+  weight: 0
+  include_in_score: false
+  percentage_change_threshold: 6.0
+  absolute_change_threshold: 3.0
+  maturity_lag:
+    weekly: 0
+    monthly: 2
+  description: Share of submissions still giving at debit 2.
+- key: d4_pct
+  family: debit_ladder
+  name: Debit 4 %
+  aliases:
+  - D4%
+  - D4 %
+  - Debit 4
+  - Debit4%
+  group: Debit ladder
+  direction: higher_is_better
+  target: 67.6
+  warning_threshold: 64.6
+  critical_threshold: 61.6
+  weight: 0
+  include_in_score: false
+  percentage_change_threshold: 6.0
+  absolute_change_threshold: 3.0
+  maturity_lag:
+    weekly: 0
+    monthly: 4
+  description: Share of submissions still giving at debit 4.
+- key: d5_pct
+  family: debit_ladder
+  name: Debit 5 %
+  aliases:
+  - D5%
+  - D5 %
+  - Debit 5
+  - Debit5%
+  group: Debit ladder
+  direction: higher_is_better
+  target: 65.0
+  warning_threshold: 62.0
+  critical_threshold: 59.0
+  weight: 0
+  include_in_score: false
+  percentage_change_threshold: 6.0
+  absolute_change_threshold: 3.0
+  maturity_lag:
+    weekly: 0
+    monthly: 5
+  description: Share of submissions still giving at debit 5.
+- key: d6_pct
+  name: Debit 6 %
+  aliases:
+  - D6%
+  - D6 %
+  - Debit 6
+  - Debit6%
+  group: Debit ladder
+  direction: higher_is_better
+  target: 62.8
+  warning_threshold: 59.8
+  critical_threshold: 56.8
+  weight: 8
+  include_in_score: true
+  percentage_change_threshold: 6.0
+  absolute_change_threshold: 3.0
+  maturity_lag:
+    weekly: 0
+    monthly: 6
+  description: Share of submissions still giving at debit 6.
+- key: d7_pct
+  family: debit_ladder
+  name: Debit 7 %
+  aliases:
+  - D7%
+  - D7 %
+  - Debit 7
+  - Debit7%
+  group: Debit ladder
+  direction: higher_is_better
+  target: 60.7
+  warning_threshold: 57.7
+  critical_threshold: 54.7
+  weight: 0
+  include_in_score: false
+  percentage_change_threshold: 6.0
+  absolute_change_threshold: 3.0
+  maturity_lag:
+    weekly: 0
+    monthly: 7
+  description: Share of submissions still giving at debit 7.
+- key: d8_pct
+  family: debit_ladder
+  name: Debit 8 %
+  aliases:
+  - D8%
+  - D8 %
+  - Debit 8
+  - Debit8%
+  group: Debit ladder
+  direction: higher_is_better
+  target: 59.0
+  warning_threshold: 56.0
+  critical_threshold: 53.0
+  weight: 0
+  include_in_score: false
+  percentage_change_threshold: 6.0
+  absolute_change_threshold: 3.0
+  maturity_lag:
+    weekly: 0
+    monthly: 8
+  description: Share of submissions still giving at debit 8.
+- key: d9_pct
+  family: debit_ladder
+  name: Debit 9 %
+  aliases:
+  - D9%
+  - D9 %
+  - Debit 9
+  - Debit9%
+  group: Debit ladder
+  direction: higher_is_better
+  target: 57.3
+  warning_threshold: 54.3
+  critical_threshold: 51.3
+  weight: 0
+  include_in_score: false
+  percentage_change_threshold: 6.0
+  absolute_change_threshold: 3.0
+  maturity_lag:
+    weekly: 0
+    monthly: 9
+  description: Share of submissions still giving at debit 9.
+- key: d10_pct
+  family: debit_ladder
+  name: Debit 10 %
+  aliases:
+  - D10%
+  - D10 %
+  - Debit 10
+  - Debit10%
+  group: Debit ladder
+  direction: higher_is_better
+  target: 55.9
+  warning_threshold: 52.9
+  critical_threshold: 49.9
+  weight: 0
+  include_in_score: false
+  percentage_change_threshold: 6.0
+  absolute_change_threshold: 3.0
+  maturity_lag:
+    weekly: 0
+    monthly: 10
+  description: Share of submissions still giving at debit 10.
+- key: d11_pct
+  family: debit_ladder
+  name: Debit 11 %
+  aliases:
+  - D11%
+  - D11 %
+  - Debit 11
+  - Debit11%
+  group: Debit ladder
+  direction: higher_is_better
+  target: 54.2
+  warning_threshold: 51.2
+  critical_threshold: 48.2
+  weight: 0
+  include_in_score: false
+  percentage_change_threshold: 6.0
+  absolute_change_threshold: 3.0
+  maturity_lag:
+    weekly: 0
+    monthly: 11
+  description: Share of submissions still giving at debit 11.
+- key: d12_pct
+  name: Debit 12 %
+  aliases:
+  - D12%
+  - D12 %
+  - Debit 12
+  - Debit12%
+  group: Debit ladder
+  direction: higher_is_better
+  target: 52.8
+  warning_threshold: 49.8
+  critical_threshold: 46.8
+  weight: 8
+  include_in_score: true
+  percentage_change_threshold: 6.0
+  absolute_change_threshold: 3.0
+  maturity_lag:
+    weekly: 0
+    monthly: 12
+  description: Share of submissions still giving at debit 12.
+- key: client_d2_pct
+  family: client_ladder
+  name: Client Debit 2 %
+  aliases:
+  - Client D2%
+  - Client D2 %
+  - ClientD2%
+  group: Client ladder
+  direction: higher_is_better
+  target: 85.6
+  warning_threshold: 82.6
+  critical_threshold: 79.6
+  denominator: client_dt_count
+  percentage_change_threshold: 6.0
+  absolute_change_threshold: 3.0
+  maturity_lag:
+    weekly: 0
+    monthly: 2
+  description: Client-reported share still giving at debit 2.
+- key: client_d3_pct
+  family: client_ladder
+  name: Client Debit 3 %
+  aliases:
+  - Client D3%
+  - Client D3 %
+  - ClientD3%
+  group: Client ladder
+  direction: higher_is_better
+  target: 80.1
+  warning_threshold: 77.1
+  critical_threshold: 74.1
+  denominator: client_dt_count
+  percentage_change_threshold: 6.0
+  absolute_change_threshold: 3.0
+  maturity_lag:
+    weekly: 0
+    monthly: 3
+  description: Client-reported share still giving at debit 3.
+- key: client_d4_pct
+  family: client_ladder
+  name: Client Debit 4 %
+  aliases:
+  - Client D4%
+  - Client D4 %
+  - ClientD4%
+  group: Client ladder
+  direction: higher_is_better
+  target: 76.0
+  warning_threshold: 73.0
+  critical_threshold: 70.0
+  denominator: client_dt_count
+  percentage_change_threshold: 6.0
+  absolute_change_threshold: 3.0
+  maturity_lag:
+    weekly: 0
+    monthly: 4
+  description: Client-reported share still giving at debit 4.
+- key: client_d5_pct
+  family: client_ladder
+  name: Client Debit 5 %
+  aliases:
+  - Client D5%
+  - Client D5 %
+  - ClientD5%
+  group: Client ladder
+  direction: higher_is_better
+  target: 72.8
+  warning_threshold: 69.8
+  critical_threshold: 66.8
+  denominator: client_dt_count
+  percentage_change_threshold: 6.0
+  absolute_change_threshold: 3.0
+  maturity_lag:
+    weekly: 0
+    monthly: 5
+  description: Client-reported share still giving at debit 5.
+- key: client_d6_pct
+  family: client_ladder
+  name: Client Debit 6 %
+  aliases:
+  - Client D6%
+  - Client D6 %
+  - ClientD6%
+  group: Client ladder
+  direction: higher_is_better
+  target: 70.4
+  warning_threshold: 67.4
+  critical_threshold: 64.4
+  denominator: client_dt_count
+  percentage_change_threshold: 6.0
+  absolute_change_threshold: 3.0
+  maturity_lag:
+    weekly: 0
+    monthly: 6
+  description: Client-reported share still giving at debit 6.
+- key: client_d7_pct
+  family: client_ladder
+  name: Client Debit 7 %
+  aliases:
+  - Client D7%
+  - Client D7 %
+  - ClientD7%
+  group: Client ladder
+  direction: higher_is_better
+  target: 68.0
+  warning_threshold: 65.0
+  critical_threshold: 62.0
+  denominator: client_dt_count
+  percentage_change_threshold: 6.0
+  absolute_change_threshold: 3.0
+  maturity_lag:
+    weekly: 0
+    monthly: 7
+  description: Client-reported share still giving at debit 7.
+- key: client_d8_pct
+  family: client_ladder
+  name: Client Debit 8 %
+  aliases:
+  - Client D8%
+  - Client D8 %
+  - ClientD8%
+  group: Client ladder
+  direction: higher_is_better
+  target: 66.1
+  warning_threshold: 63.1
+  critical_threshold: 60.1
+  denominator: client_dt_count
+  percentage_change_threshold: 6.0
+  absolute_change_threshold: 3.0
+  maturity_lag:
+    weekly: 0
+    monthly: 8
+  description: Client-reported share still giving at debit 8.
+- key: client_d9_pct
+  family: client_ladder
+  name: Client Debit 9 %
+  aliases:
+  - Client D9%
+  - Client D9 %
+  - ClientD9%
+  group: Client ladder
+  direction: higher_is_better
+  target: 64.3
+  warning_threshold: 61.3
+  critical_threshold: 58.3
+  denominator: client_dt_count
+  percentage_change_threshold: 6.0
+  absolute_change_threshold: 3.0
+  maturity_lag:
+    weekly: 0
+    monthly: 9
+  description: Client-reported share still giving at debit 9.
+- key: client_d10_pct
+  family: client_ladder
+  name: Client Debit 10 %
+  aliases:
+  - Client D10%
+  - Client D10 %
+  - ClientD10%
+  group: Client ladder
+  direction: higher_is_better
+  target: 62.7
+  warning_threshold: 59.7
+  critical_threshold: 56.7
+  denominator: client_dt_count
+  percentage_change_threshold: 6.0
+  absolute_change_threshold: 3.0
+  maturity_lag:
+    weekly: 0
+    monthly: 10
+  description: Client-reported share still giving at debit 10.
+- key: client_d11_pct
+  family: client_ladder
+  name: Client Debit 11 %
+  aliases:
+  - Client D11%
+  - Client D11 %
+  - ClientD11%
+  group: Client ladder
+  direction: higher_is_better
+  target: 61.0
+  warning_threshold: 58.0
+  critical_threshold: 55.0
+  denominator: client_dt_count
+  percentage_change_threshold: 6.0
+  absolute_change_threshold: 3.0
+  maturity_lag:
+    weekly: 0
+    monthly: 11
+  description: Client-reported share still giving at debit 11.
+- key: client_d12_pct
+  family: client_ladder
+  name: Client Debit 12 %
+  aliases:
+  - Client D12%
+  - Client D12 %
+  - ClientD12%
+  group: Client ladder
+  direction: higher_is_better
+  target: 59.3
+  warning_threshold: 56.3
+  critical_threshold: 53.3
+  denominator: client_dt_count
+  percentage_change_threshold: 6.0
+  absolute_change_threshold: 3.0
+  maturity_lag:
+    weekly: 0
+    monthly: 12
+  description: Client-reported share still giving at debit 12.
+- key: client_dt_count
+  name: Client DT count
+  aliases:
+  - Sum of ClientDT
+  - ClientDT
+  group: Volume
+  unit: count
+  stored_as: raw
+  direction: neutral
+  decimals: 0
+  denominator: null
+  min_denominator: null
+  alert_on_weekly_change: false
+  description: Client-side denominator for the client debit ladder.
+- key: supports
+  name: Supports
+  aliases:
+  - Supports
+  group: Volume
+  unit: number
+  stored_as: raw
+  direction: neutral
+  decimals: 2
+  denominator: null
+  min_denominator: null
+  alert_on_weekly_change: false
+  description: Support value reported on the Waterfall sheet.

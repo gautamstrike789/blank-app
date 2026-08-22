@@ -1,0 +1,92 @@
+# =============================================================================
+# Column recognition rules for the ingestion layer.
+#
+# Metric columns are resolved through metrics.yaml aliases.  This file covers
+# the *structural* columns - who the row is about and when it happened - plus
+# the junk rows Excel pivots leave behind.
+#
+# Matching is case/punctuation-insensitive.  Add a synonym here when the weekly
+# export renames a column; that is a config change, not a code change.
+# =============================================================================
+entity_columns:
+  owner:
+    - OWNER NAME
+    - Owner
+    - Owner Name
+    - OwnerName
+    - Manager
+    - Team Leader
+    - TL Name
+  ba:
+    - BAName
+    - BA Name
+    - BA
+    - Business Associate
+    - Fundraiser
+    - Agent Name
+    - FR Name
+  team:
+    - Team
+    - Team Name
+    - Crew
+    - Squad
+  city:
+    - CITY
+    - City
+    - Location
+    - Branch
+
+period_columns:
+  year:
+    - SigninDT (Year)
+    - Year
+    - Signin Year
+    - Report Year
+  month:
+    - SigninDT (Month)
+    - Month
+    - MONTH
+    - Signin Month
+    - Report Month
+  week:
+    - Week
+    - Week No
+    - Week Number
+    - ISO Week
+    - Reporting Week
+  date:
+    - SigninDT
+    - Date
+    - Report Date
+    - Week Ending
+    - Week Start
+    - WeekEnding
+  period_key:
+    - Period
+    - Period Key
+    - Week Key
+
+# Rows whose entity/period cell matches any of these are pivot subtotals and
+# are dropped before loading.  Loading them would double-count every metric.
+total_row_markers:
+  - Total
+  - Grand Total
+  - Subtotal
+  - Sum
+  - All
+  - (blank)
+
+# Values treated as "no data" in a metric cell.
+null_tokens:
+  - ""
+  - "-"
+  - "--"
+  - "N/A"
+  - "NA"
+  - "n/a"
+  - "#N/A"
+  - "#DIV/0!"
+  - "#VALUE!"
+  - "#REF!"
+  - "null"
+  - "NULL"

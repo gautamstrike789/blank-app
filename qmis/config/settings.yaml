@@ -1,0 +1,60 @@
+# =============================================================================
+# QMIS runtime settings.  Everything here can be changed without touching code.
+# Environment variables override the matching values (see qmis/core/config.py).
+# =============================================================================
+database:
+  # sqlite is right for this size (650 BAs x ~45 metrics x 52 weeks is roughly
+  # 1.5M rows a year). Point this at PostgreSQL/Supabase when concurrent
+  # writers or a managed backup policy start to matter - nothing else changes.
+  url: null                      # null -> data/qmis.db, or set QMIS_DATABASE_URL
+
+storage:
+  backend: local                 # local | memory | gdrive | onedrive | sharepoint
+  inbox: data/inbox              # a synced Drive/OneDrive folder works as-is
+  archive: data/processed
+  archive_after_load: true
+
+evaluation:
+  grain: weekly
+  trailing_window: 4             # periods behind the current one for the average
+  rolling_window: 4              # window for small-sample levels; 1 disables
+  rolling_levels: [ba, team, owner]
+  confidence: 0.90               # significance level for the proportion tests
+  quality_score_bands:
+    - [90, Excellent]
+    - [75, Healthy]
+    - [60, Attention required]
+    - [0, Critical]
+
+alerts:
+  family_group_min_size: 3       # collapse a correlated cascade at this size
+  max_alerts_per_digest: 15
+
+notifications:
+  enabled: false                 # off until channels are configured
+  # Only these severities are ever sent. Everything else lives in the dashboard,
+  # which is where a 0.2pp move belongs.
+  send_severities: [RED, ORANGE]
+  send_improvements: true
+  max_improvements: 3
+  # A recipient is not told about the same entity+metric again until either the
+  # severity gets worse or this many periods have passed.
+  repeat_after_periods: 3
+  channels: []
+    # - kind: email
+    #   host: smtp.example.com
+    #   port: 587
+    #   username: qmis@example.com
+    #   password_env: QMIS_SMTP_PASSWORD
+    #   sender: qmis@example.com
+    #   use_tls: true
+    # - kind: webhook          # Slack or Microsoft Teams incoming webhook
+    #   url_env: QMIS_SLACK_WEBHOOK
+    #   format: slack          # slack | teams | raw
+
+auth:
+  # Development default. In production put the app behind your identity
+  # provider and pass the authenticated email in this header.
+  mode: header                   # header | demo
+  header_name: X-Forwarded-Email
+  demo_role: admin
